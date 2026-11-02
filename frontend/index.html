@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockchain Voting System</title>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<style>
+  body{font-family:Arial,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#1a1a1a}
+  h1{font-size:22px} h2{font-size:17px;margin-top:28px}
+  input,button{padding:8px;margin:4px 4px 4px 0;font-size:14px}
+  button{cursor:pointer;background:#1f4e79;color:#fff;border:0;border-radius:4px}
+  .card{border:1px solid #ccc;border-radius:6px;padding:12px;margin:8px 0;display:flex;justify-content:space-between;align-items:center}
+  #status{background:#f3f6fa;padding:8px;border-radius:4px;margin-top:12px;font-size:13px;word-break:break-all}
+  .small{color:#555;font-size:13px}
+</style>
+</head>
+<body>
+<h1>Blockchain-Based Voting System</h1>
+<p class="small">Connect MetaMask (Sepolia or local Hardhat), paste the deployed <b>Voting</b> contract address, then load the election.</p>
+
+<input id="addr" size="46" placeholder="Voting contract address (0x...)">
+<button onclick="connect()">Connect wallet &amp; load</button>
+<div id="status">Not connected.</div>
+
+<h2>Candidates</h2>
+<div id="candidates"></div>
+<button onclick="refresh()">Refresh results</button>
+<button onclick="winner()">Show winner</button>
+
+<h2>Admin panel</h2>
+<div>
+  <input id="cname" placeholder="Candidate name"><input id="cparty" placeholder="Party">
+  <button onclick="addCandidate()">Add candidate</button>
+</div>
+<div>
+  <input id="voter" size="46" placeholder="Voter wallet address">
+  <button onclick="registerVoter()">Register voter</button>
+</div>
+<div>
+  <input id="start" placeholder="Start (unix time)"><input id="end" placeholder="End (unix time)">
+  <button onclick="setPeriod()">Set election period</button>
+  <button onclick="fillTimes()">Fill: start in 1 min, end in 1 hour</button>
+</div>
+
+<script>
+const ABI = [
+  "function admin() view returns (address)",
+  "function candidatesCount() view returns (uint256)",
+  "function candidates(uint256) view returns (uint256 id,string name,string party,uint256 voteCount)",
+  "function isRegistered(address) view returns (bool)",
+  "function hasVoted(address) view returns (bool)",
+  "function startTime() view returns (uint256)",
+  "function endTime() view returns (uint256)",
+  "function addCandidate(string,string)",
+  "function registerVoter(address)",
+  "function setElectionPeriod(uint256,uint256)",
+  "function vote(uint256)",
+  "function getWinner() view returns (string name,uint256 votes)"
+];
+let provider, signer, contract, me;
+const $ = (id) => document.getElementById(id);
+const say = (m) => { $("status").textContent = m; };
+
+async function connect() {
+  try {
+    if (!window.ethereum) return say("MetaMask not found. Install the MetaMask extension.");
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    signer = await provider.getSigner();
+    me = await signer.getAddress();
+    contract = new ethers.Contract($("addr").value.trim(), ABI, signer);
+    const adminAddr = await contract.admin();
+    say("Connected as " + me + (adminAddr.toLowerCase() === me.toLowerCase() ? " (ADMIN)" : " (voter)"));
+    await refresh();
+  } catch (e) { say("Error: " + (e.reason || e.shortMessage || e.message)); }
+}
+
+async function refresh() {
+  try {
+    const n = Number(await contract.candidatesCount());
+    const box = $("candidates"); box.innerHTML = "";
+    const voted = await contract.hasVoted(me);
+    for (let i = 1; i <= n; i++) {
+      const c = await contract.candidates(i);
+      const div = document.createElement("div"); div.className = "card";
+      div.innerHTML = "<span><b>" + c.name + "</b> (" + c.party + ") &mdash; votes: " + c.voteCount + "</span>";
+      const b = document.createElement("button"); b.textContent = voted ? "Already voted" : "Vote";
+      b.disabled = voted; b.onclick = () => castVote(i);
+      div.appendChild(b); box.appendChild(div);
+    }
+  } catch (e) { say("Error: " + (e.reason || e.shortMessage || e.message)); }
+}
+
+async function send(promiseFn, okMsg) {
+  try {
+    say("Waiting for MetaMask confirmation...");
+    const tx = await promiseFn();
+    say("Transaction sent: " + tx.hash + " (mining...)");
+    await tx.wait();
+    say(okMsg + " | Tx hash: " + tx.hash);
+    await refresh();
+  } catch (e) { say("Failed: " + (e.reason || e.shortMessage || e.message)); }
+}
+
+const castVote = (id) => send(() => contract.vote(id), "Vote recorded");
+const addCandidate = () => send(() => contract.addCandidate($("cname").value, $("cparty").value), "Candidate added");
+const registerVoter = () => send(() => contract.registerVoter($("voter").value.trim()), "Voter registered");
+const setPeriod = () => send(() => contract.setElectionPeriod($("start").value, $("end").value), "Election period set");
+function fillTimes() { const t = Math.floor(Date.now() / 1000); $("start").value = t + 60; $("end").value = t + 3600; }
+async function winner() {
+  try { const [n, v] = await contract.getWinner(); say("Winner: " + n + " with " + v + " votes"); }
+  catch (e) { say("Not available yet: " + (e.reason || e.shortMessage || e.message)); }
+}
+</script>
+</body>
+</html>
