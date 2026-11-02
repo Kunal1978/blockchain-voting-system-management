@@ -41,29 +41,31 @@ Traditional voting (paper ballots, EVMs, central web voting) depends on a single
 | Source code repo | `blockchain-voting.zip` | Contracts, tests, deploy script, front end, README |
 | Presentation | `Blockchain_Voting_Presentation.pptx` | 14-slide final presentation |
 | Cook Book | Claude Doc "Cook Book - Blockchain-Based Voting System" | Step-by-step guide to reproduce and demo |
-| Technical paper | BroncoVote (ICISSP 2018) | Base paper that we studied and implemented |
+| Technical paper | Hardwick et al., IEEE Blockchain 2018 | Base IEEE paper that we studied and implemented |
 | This file | `PROJECT_EXPLANATION.md` | Detailed explanation of everything |
 
-## 4. Base Technical Paper
+## 4. Base Technical Paper (IEEE)
 
-**G. G. Dagher, P. B. Marella, M. Milojkovic, J. Mohler, "BroncoVote: Secure Voting System using Ethereum's Blockchain," ICISSP 2018, pp. 96-107. DOI 10.5220/0006609700960107.**
-Link: https://www.scitepress.org/Papers/2018/66097/66097.pdf
+**F. S. Hardwick, A. Gioulis, R. N. Akram, K. Markantonakis, "E-Voting with Blockchain: An E-Voting Protocol with Decentralisation and Voter Privacy," 2018 IEEE Blockchain (Halifax, Canada).**
+Preprint: https://arxiv.org/abs/1805.10258 (find the published IEEE Xplore page by searching the title on ieeexplore.ieee.org, and use that link in your sheet and report).
 
-The paper proposes a university-scale voting framework on Ethereum. Smart contracts handle voter administration and keep an auditable public record. For privacy, ballots are encrypted using the Paillier homomorphic cryptosystem so votes can be tallied without decrypting individual ballots. The system was deployed on an Ethereum test network.
+The paper proposes a protocol that uses the blockchain as a transparent ballot box. It aims for a degree of decentralisation, with the voters, as a network of peers, holding as much control of the process as possible. It targets the fundamental e-voting properties (such as privacy and verifiability) and lets a voter change or cancel a vote within the permitted period, which gives a form of coercion resistance: a coerced voter can later cast their true choice.
 
-**Why we chose it:** it uses the same stack as ours (Ethereum, Solidity, testnet) and addresses the main weakness of a basic blockchain voting system, which is voter privacy.
+**Why we chose it:** it is an IEEE paper, it uses the blockchain as a public ballot box (which is exactly what our smart contract does), and it has a concrete feature we could implement: re-voting.
 
 **Paper-to-project mapping**
 
 | Idea in the paper | What we implemented |
 |---|---|
-| Smart contracts for voter administration | Admin-controlled voter whitelist in `Voting.sol` |
-| Public, auditable ballots | `Voted` events and public tallies, checkable on Etherscan |
-| Privacy-preserving ballots | Commit-reveal in `PrivateVoting.sol` |
-| Testnet deployment | Remix + MetaMask + Sepolia procedure |
-| Cost and usability evaluation | Gas measurements and 17 automated tests |
+| Blockchain as a transparent ballot box | `Voting.sol`: public candidates, public tallies, `Voted` events verifiable on a block explorer |
+| Voter can change or cancel a vote within the permitted period | `changeVote()`: a voter replaces their vote until the end time; only one vote per voter is ever counted |
+| Control placed with voters, decentralised process | No central database; rules run on-chain; only registered wallets vote |
+| Privacy of how a voter voted | Commit-reveal in `PrivateVoting.sol` (hides the running tally; see limitation below) |
+| Evaluation | 20 automated tests and gas measurements |
 
-**Honest note:** the paper uses Paillier homomorphic encryption. We did **not** implement Paillier in the contracts, because that arithmetic is too expensive on-chain. Instead we implemented commit-reveal, which achieves a smaller goal (hiding the running tally during voting). The Paillier approach is documented as an off-chain extension in the report.
+**Honest note:** our contract is a simplified implementation of the paper's ideas. We did not reproduce the paper's full cryptographic protocol. We implemented the ballot-box model, re-voting, and a commit-reveal privacy extension. Vote cancellation (as opposed to changing) is not implemented.
+
+**Related work also studied:** BroncoVote (Dagher et al., ICISSP 2018, DOI 10.5220/0006609700960107), which uses Paillier homomorphic encryption for ballot privacy. Paillier tallying is listed as future work.
 
 ## 5. System Architecture
 
@@ -103,6 +105,7 @@ Three layers:
 | `candidates` | Mapping from id to `Candidate{id, name, party, voteCount}` |
 | `isRegistered` | Whitelist of eligible voters |
 | `hasVoted` | Tracks who has already voted |
+| `votedFor` | Candidate id of each voter's current vote (needed for `changeVote`) |
 
 **Modifiers**
 
@@ -115,9 +118,10 @@ Three layers:
 - `addCandidate(name, party)`: admin only; allowed only before the election starts, so candidates cannot be added mid-election.
 - `registerVoter(address)`: admin only; rejects duplicates; emits `VoterRegistered`.
 - `vote(candidateId)`: the core function. It checks, in order: voting is open, caller is registered, caller has not voted, candidate id is valid. Then it sets `hasVoted[msg.sender] = true`, increments the candidate's `voteCount`, and emits `Voted`. Marking `hasVoted` before any other effect is what prevents double voting.
+- `changeVote(newCandidateId)`: lets a voter who has already voted replace their vote while voting is open. It requires an existing vote, a valid candidate and a different candidate; it decrements the old candidate, increments the new one and updates `votedFor[msg.sender]`. The total number of counted votes stays one per voter. Emits `VoteChanged(voter, oldId, newId)`.
 - `getWinner()`: public view; reverts until the election has ended; loops through candidates to find the highest count; reverts with "No votes cast" if nobody voted.
 
-**Events:** `VoterRegistered(address)` and `Voted(address indexed voter, uint indexed candidateId)`. Events are cheap to store and easy to search on a block explorer, which supports auditing.
+**Events:** `VoterRegistered(address)`, `Voted(address indexed voter, uint indexed candidateId)` and `VoteChanged(address indexed voter, uint indexed oldCandidateId, uint indexed newCandidateId)`. Events are cheap to store and easy to search on a block explorer, which supports auditing.
 
 ### 6.2 `PrivateVoting.sol` (commit-reveal extension)
 
@@ -167,9 +171,9 @@ blockchain-voting/
 
 ## 9. Testing
 
-We wrote 17 automated tests and ran all of them: **17 passing**.
+We wrote 20 automated tests and ran all of them: **20 passing**.
 
-**`Voting` (10 tests)**
+**`Voting` (13 tests)**
 
 | ID | Scenario | Expected |
 |---|---|---|
@@ -183,6 +187,9 @@ We wrote 17 automated tests and ran all of them: **17 passing**.
 | TC8 | Vote after end | Reverts: Voting is not open |
 | TC9 | Candidate id 0 or too high | Reverts: Invalid candidate |
 | TC10 | Winner before and after end | Reverts early; correct winner later |
+| TC11 | Voter changes vote before the end | Old count -1, new count +1, total still one |
+| TC12 | Change without voting, to same candidate, or to invalid id | Reverts: No vote to change / Same candidate / Invalid candidate |
+| TC13 | Change vote after the end | Reverts: Voting is not open |
 
 Time-dependent tests use Hardhat's `time.increase` to move the blockchain clock instead of waiting.
 
@@ -206,11 +213,12 @@ Time-dependent tests use Hardhat's `time.increase` to move the blockchain clock 
 
 | Operation | Gas |
 |---|---|
-| Deploy `Voting` | 1,427,234 |
-| `registerVoter` | about 47,800 |
+| Deploy `Voting` | 1,672,965 |
+| `registerVoter` | about 47,900 |
 | `setElectionPeriod` | about 68,500 |
 | `addCandidate` | about 111,900 (average) |
-| `vote` | about 73,200 (average) |
+| `vote` | about 96,700 (average; higher than before because `votedFor` is also stored) |
+| `changeVote` | about 60,200 |
 | Deploy `PrivateVoting` | 1,898,740 |
 | `commitVote` | about 50,000 |
 | `revealVote` | about 70,800 (average) |
@@ -221,7 +229,8 @@ Writing to storage is the main cost. Sepolia values may differ slightly. Record 
 
 | Threat | Mitigation |
 |---|---|
-| Double voting | `hasVoted` mapping set on first vote |
+| Double counting | `hasVoted` mapping; re-voting replaces the old vote rather than adding a second |
+| Coercion | A coerced voter can later change their vote with `changeVote` before the end |
 | Unauthorized voting | Whitelist via `registerVoter`; tested |
 | Admin abuse | Admin can set up the election but cannot edit tallies or cast votes; all actions are public |
 | Tampering | Immutable, hash-linked ledger |
@@ -245,7 +254,7 @@ unzip blockchain-voting.zip
 cd blockchain-voting
 npm install
 npx hardhat compile
-npx hardhat test               # expect 17 passing
+npx hardhat test               # expect 20 passing
 REPORT_GAS=true npx hardhat test   # optional gas report
 ```
 
@@ -277,7 +286,7 @@ Or use Remix: paste `contracts/Voting.sol`, compile with 0.8.20, choose "Injecte
 | Working prototype (Ethereum, Solidity, Remix, MetaMask) | Sections 6, 7, 8 here; repo; report section 22 |
 | Demonstrate and test deployment, execution, validation, verification | Sections 9, 12 here; Cook Book; report sections 13, 22 |
 | Submission: architecture, implementation, test results, security, source code, presentation | Repo, PPT, Sections 9 to 11 here |
-| Technical paper and implementation | Section 4 here; report section 24 |
+| Technical paper and implementation | Section 4 here; PPT slide 4; report section 24 (see its update note) |
 
 ## 14. Likely Viva Questions
 
@@ -285,7 +294,8 @@ Or use Remix: paste `contracts/Voting.sol`, compile with 0.8.20, choose "Injecte
 2. **How do you prevent double voting?** The `hasVoted` mapping is set during the first successful vote, and later attempts revert.
 3. **Is the vote anonymous?** No, it is pseudonymous. Votes link to wallet addresses. Full anonymity needs blind signatures, mixnets or zero-knowledge proofs.
 4. **What does commit-reveal add?** It hides the running tally until the reveal phase, so early results cannot influence later voters.
-5. **What did you take from the paper and what did you not implement?** Contract-based voter administration, public auditable ballots and testnet deployment. We did not implement Paillier encryption on-chain; it is described as an off-chain extension.
+5. **What did you take from the paper and what did you not implement?** The blockchain-as-ballot-box model and the re-voting feature (`changeVote`), plus a commit-reveal privacy extension. We did not reproduce the paper's full cryptographic protocol, and vote cancellation is not implemented.
+5a. **How does re-voting help?** A coerced voter can change the vote later, so a coercer cannot be sure the forced vote stays. Only the last vote counts, and the contract never counts two votes for one voter.
 6. **Who can cheat?** The admin controls voter registration, so identity verification is a trust assumption. The admin cannot change tallies or vote.
 7. **Why a testnet?** It uses free test ETH and has the same behavior as the main network, so it is safe for a demo.
 8. **What happens to a failed transaction?** It reverts, state is unchanged, and the sender only pays gas for the attempt.
@@ -295,11 +305,11 @@ Or use Remix: paste `contracts/Voting.sol`, compile with 0.8.20, choose "Injecte
 - [ ] Fill names, guide and college in the report placeholders
 - [ ] Deploy to Sepolia and record contract address and transaction hashes
 - [ ] Take screenshots (deployment, votes, rejected cases, Etherscan, test output)
-- [ ] Update the report's test table to 17 tests
+- [ ] Update the report's test table to 20 tests (see report section 25)
 - [ ] Push the repo to GitHub and paste the link in the grading sheet
 - [ ] Upload the PPT to Drive; share the Cook Book link
-- [ ] Paste the paper link: https://www.scitepress.org/Papers/2018/66097/66097.pdf
-- [ ] Confirm with your library that the paper's venue satisfies the "Scopus indexed" requirement
+- [ ] Open the paper on IEEE Xplore (search its title) and paste that link in the sheet
+- [ ] Redeploy the contract (`npm run deploy:local`) because `Voting.sol` changed
 
 ---
 
@@ -394,12 +404,13 @@ Add all candidates before the start time passes. The contract rejects new candid
 2. Switch MetaMask to **Voter1**. On the page, click **Connect wallet & load** and approve Voter1. The status bar should say `(voter)`.
 3. Click **Vote** next to a candidate and confirm. The status bar shows the transaction hash and the candidate's count becomes 1.
 4. Switch to **Voter2**, reconnect, and vote.
+5. **Change a vote (IEEE paper feature):** as Voter1, click **Change my vote to this** next to the other candidate and confirm. The old candidate's count drops by one and the new one's rises by one; the voter's own row now shows **Your vote** on the new candidate. This only works while the election is open.
 
 ### 16.8 Show the rejection cases (for the report and viva)
 
 | Test | How | Expected message |
 |---|---|---|
-| Double vote | Voter1 tries to vote again | You have already voted (button also disabled) |
+| Double vote | Call `vote` again as Voter1 (in the page the button becomes Change my vote) | You have already voted |
 | Unregistered voter | Switch to Voter3, reconnect, vote | Not a registered voter |
 | Non-admin action | As Voter1, try adding a candidate | Only admin allowed |
 | Vote outside window | Vote before start or after end | Voting is not open |
@@ -442,4 +453,4 @@ The election "ends" only in the sense that the contract stops accepting votes on
 - [ ] Successful votes from Voter1 and Voter2 with transaction hashes
 - [ ] Each rejection message from section 16.8
 - [ ] Winner shown after the end time
-- [ ] `npx hardhat test` output showing 17 passing
+- [ ] `npx hardhat test` output showing 20 passing
